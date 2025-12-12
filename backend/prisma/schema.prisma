@@ -1,0 +1,197 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Workspace {
+  id          String   @id @default(uuid())
+  name        String
+  projectRoot String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  agentProfiles    AgentProfile[]
+  chatSessions     ChatSession[]
+  jobs             Job[]
+  mcpServerConfigs MCPServerConfig[]
+  mcpTools         MCPTool[]
+  skillMetadata    SkillMetadata[]
+}
+
+model AgentProfile {
+  id          String @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String   @default("")
+  model       String   @default("claude-sonnet-4-20250514")
+
+  systemPromptPreset      String  @default("claude_code")
+  customSystemPromptAppend String?
+
+  allowedTools       String  @default("[]")
+  enabledSkillScopes String  @default("[\"user\",\"project\"]")
+  enabledMcpServers  String  @default("[]")
+
+  maxTurnsInHistory Int     @default(50)
+  maxDocTokens      Int     @default(50000)
+  enableScratchpad  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  chatSessions ChatSession[]
+  jobs         Job[]
+}
+
+model ChatSession {
+  id             String @id @default(uuid())
+  workspaceId    String
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agentProfileId String
+  agentProfile   AgentProfile @relation(fields: [agentProfileId], references: [id], onDelete: Cascade)
+
+  title     String
+  archived  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages ChatMessage[]
+  runs     Run[]
+}
+
+model ChatMessage {
+  id        String @id @default(uuid())
+  sessionId String
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  role    String
+  content String
+
+  jobId String?
+  runId String?
+
+  createdAt DateTime @default(now())
+}
+
+model Job {
+  id             String @id @default(uuid())
+  workspaceId    String
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agentProfileId String
+  agentProfile   AgentProfile @relation(fields: [agentProfileId], references: [id], onDelete: Cascade)
+
+  title       String
+  description String @default("")
+  status      String @default("queued")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  runs Run[]
+}
+
+model Run {
+  id        String @id @default(uuid())
+  jobId     String
+  job       Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  sessionId String?
+  session   ChatSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  status     String    @default("running")
+  finalText  String?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  traceEvents    TraceEvent[]
+  contextSnapshots ContextSnapshot[]
+}
+
+model TraceEvent {
+  id        String @id @default(uuid())
+  runId     String
+  run       Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  type      String
+  timestamp DateTime @default(now())
+  payload   String
+
+  @@index([runId])
+}
+
+model ContextSnapshot {
+  id    String @id @default(uuid())
+  runId String
+  run   Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  historySummary    String @default("")
+  docsSummary       String @default("")
+  skillsSummary     String @default("")
+  mcpSummary        String @default("")
+  scratchpadSummary String @default("")
+}
+
+model MCPServerConfig {
+  id          String @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  name      String
+  transport String @default("stdio")
+  command   String?
+  args      String @default("[]")
+  url       String?
+  headers   String @default("{}")
+  env       String @default("{}")
+  enabled   Boolean @default(true)
+
+  lastStatus String?
+  lastError  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([workspaceId, name])
+}
+
+model MCPTool {
+  id          String @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  serverName  String
+  toolName    String
+  fullName    String
+  description String @default("")
+  inputSchema String @default("{}")
+  isHighRisk  Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([workspaceId, fullName])
+}
+
+model SkillMetadata {
+  id          String @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  slug        String
+  path        String
+  name        String
+  description String @default("")
+  scope       String @default("project")
+  trusted     Boolean @default(false)
+
+  lastIndexedAt DateTime @default(now())
+
+  @@unique([workspaceId, slug])
+}
