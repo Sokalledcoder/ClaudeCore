@@ -1,13 +1,14 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { X, Server, Globe, Terminal, Radio } from 'lucide-react';
-import { api } from '../../api/client';
+import { api, MCPServerConfig } from '../../api/client';
 import { useAppStore } from '../../stores/app.store';
 import { cn } from '../../lib/utils';
 
 interface Props {
   open: boolean;
   onClose: () => void;
+  editServer?: MCPServerConfig | null;
 }
 
 type TransportType = 'stdio' | 'http' | 'sse';
@@ -26,7 +27,7 @@ const PRESET_SERVERS = [
   { name: 'Puppeteer', transport: 'stdio' as TransportType, command: 'npx', args: '-y @anthropic-ai/mcp-server-puppeteer' },
 ];
 
-export function AddMCPServerDialog({ open, onClose }: Props) {
+export function AddMCPServerDialog({ open, onClose, editServer }: Props) {
   const queryClient = useQueryClient();
   const { currentWorkspace, setMcpServers, mcpServers } = useAppStore();
   
@@ -38,11 +39,38 @@ export function AddMCPServerDialog({ open, onClose }: Props) {
   const [headers, setHeaders] = useState('');
   const [showPresets, setShowPresets] = useState(true);
 
+  const isEditing = !!editServer;
+
+  // Populate form when editing
+  useEffect(() => {
+    if (editServer) {
+      setName(editServer.name);
+      setTransport(editServer.transport as TransportType);
+      setCommand(editServer.command || '');
+      setArgs(editServer.args?.join(' ') || '');
+      setUrl(editServer.url || '');
+      setHeaders(editServer.headers ? Object.entries(editServer.headers).map(([k, v]) => `${k}: ${v}`).join('\n') : '');
+      setShowPresets(false);
+    } else {
+      resetForm();
+    }
+  }, [editServer]);
+
   const createServer = useMutation({
     mutationFn: api.mcp.createServer,
     onSuccess: (server) => {
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] });
       setMcpServers([...mcpServers, server]);
+      resetForm();
+      onClose();
+    },
+  });
+
+  const updateServer = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof api.mcp.updateServer>[1] }) => 
+      api.mcp.updateServer(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['mcp-servers'] });
       resetForm();
       onClose();
     },
@@ -82,16 +110,33 @@ export function AddMCPServerDialog({ open, onClose }: Props) {
       serverData.args = args.trim().split(/\s+/).filter(Boolean);
     } else {
       serverData.url = url.trim();
+      // Parse headers - support both JSON and key: value format
       if (headers.trim()) {
         try {
           serverData.headers = JSON.parse(headers.trim());
         } catch {
-          // Invalid JSON, ignore headers
+          // Try parsing as key: value lines
+          const headerObj: Record<string, string> = {};
+          headers.split('\n').forEach(line => {
+            const colonIndex = line.indexOf(':');
+            if (colonIndex > 0) {
+              const key = line.substring(0, colonIndex).trim();
+              const value = line.substring(colonIndex + 1).trim();
+              if (key) headerObj[key] = value;
+            }
+          });
+          if (Object.keys(headerObj).length > 0) {
+            serverData.headers = headerObj;
+          }
         }
       }
     }
 
-    createServer.mutate(serverData);
+    if (isEditing && editServer) {
+      updateServer.mutate({ id: editServer.id, data: serverData });
+    } else {
+      createServer.mutate(serverData);
+    }
   };
 
   if (!open) return null;
@@ -112,8 +157,8 @@ export function AddMCPServerDialog({ open, onClose }: Props) {
             <Server className="w-5 h-5 text-green-400" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold">Add MCP Server</h2>
-            <p className="text-sm text-muted-foreground">Connect to an MCP server</p>
+            <h2 className="text-lg font-semibold">{isEditing ? 'Edit MCP Server' : 'Add MCP Server'}</h2>
+            <p className="text-sm text-muted-foreground">{isEditing ? 'Update server configuration' : 'Connect to an MCP server'}</p>
           </div>
         </div>
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Send, Sparkles, FileCode } from 'lucide-react';
+import { Send, Sparkles, FileCode, Bot, Server } from 'lucide-react';
 import { api, type ChatMessage } from '../../api/client';
 import { useAppStore } from '../../stores/app.store';
 import { socketClient } from '../../lib/socket';
@@ -18,6 +18,7 @@ export function ChatPanel() {
   const {
     currentSession,
     currentWorkspace,
+    currentProfile,
     messages,
     setMessages,
     addMessage,
@@ -156,7 +157,22 @@ export function ChatPanel() {
             {currentWorkspace?.name}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {currentProfile && (
+            <div className="flex items-center gap-2 text-xs">
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-secondary rounded-md">
+                <Bot className="w-3.5 h-3.5 text-primary" />
+                <span className="font-medium">{currentProfile.name}</span>
+                <span className="text-muted-foreground">({currentProfile.model})</span>
+              </div>
+              {currentProfile.enabledMcpServers.length > 0 && (
+                <div className="flex items-center gap-1.5 px-2 py-1 bg-green-500/10 text-green-400 rounded-md">
+                  <Server className="w-3.5 h-3.5" />
+                  <span>{currentProfile.enabledMcpServers.length} MCP</span>
+                </div>
+              )}
+            </div>
+          )}
           <button className="p-2 hover:bg-secondary rounded-md text-muted-foreground" title="Create Skill from Chat">
             <FileCode className="w-4 h-4" />
           </button>

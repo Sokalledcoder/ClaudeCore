@@ -7,9 +7,12 @@ import {
   Plus,
   Settings,
   Briefcase,
-  UserPlus
+  UserPlus,
+  Pencil,
+  Trash2,
+  X
 } from 'lucide-react';
-import { api } from '../../api/client';
+import { api, ChatSession } from '../../api/client';
 import { useAppStore } from '../../stores/app.store';
 import { cn, formatDate, truncate } from '../../lib/utils';
 import { CreateWorkspaceDialog } from '../dialogs/CreateWorkspaceDialog';
@@ -35,12 +38,51 @@ export function Sidebar() {
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
   const [showCreateProfile, setShowCreateProfile] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [editingSession, setEditingSession] = useState<string | null>(null);
+  const [editingSessionTitle, setEditingSessionTitle] = useState('');
 
   const createSession = useMutation({
     mutationFn: api.sessions.create,
     onSuccess: (session) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setCurrentSession(session);
+    },
+  });
+
+  const updateSession = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { title?: string } }) => 
+      api.sessions.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      setEditingSession(null);
+    },
+  });
+
+  const deleteSession = useMutation({
+    mutationFn: api.sessions.delete,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      if (currentSession && sessions.find((s: ChatSession) => s.id === currentSession.id) === undefined) {
+        setCurrentSession(null);
+      }
+    },
+  });
+
+  const deleteProfile = useMutation({
+    mutationFn: api.profiles.delete,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      if (currentProfile) {
+        setCurrentProfile(null);
+      }
+    },
+  });
+
+  const deleteWorkspace = useMutation({
+    mutationFn: api.workspaces.delete,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      setCurrentWorkspace(null);
     },
   });
 
@@ -66,13 +108,28 @@ export function Sidebar() {
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <label className="text-xs text-muted-foreground">Workspace</label>
-            <button
-              onClick={() => setShowCreateWorkspace(true)}
-              className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-foreground"
-              title="Create workspace"
-            >
-              <FolderPlus className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-0.5">
+              {currentWorkspace && (
+                <button
+                  onClick={() => {
+                    if (confirm(`Delete workspace "${currentWorkspace.name}"? This will delete all associated data.`)) {
+                      deleteWorkspace.mutate(currentWorkspace.id);
+                    }
+                  }}
+                  className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-red-400"
+                  title="Delete workspace"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <button
+                onClick={() => setShowCreateWorkspace(true)}
+                className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-foreground"
+                title="Create workspace"
+              >
+                <FolderPlus className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
           <select
             className="w-full bg-secondary text-foreground rounded-md px-2 py-1.5 text-sm border border-border"
@@ -92,14 +149,29 @@ export function Sidebar() {
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <label className="text-xs text-muted-foreground">Agent Profile</label>
-            <button
-              onClick={() => setShowCreateProfile(true)}
-              disabled={!currentWorkspace}
-              className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-foreground disabled:opacity-50"
-              title="Create profile"
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-0.5">
+              {currentProfile && (
+                <button
+                  onClick={() => {
+                    if (confirm(`Delete profile "${currentProfile.name}"?`)) {
+                      deleteProfile.mutate(currentProfile.id);
+                    }
+                  }}
+                  className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-red-400"
+                  title="Delete profile"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <button
+                onClick={() => setShowCreateProfile(true)}
+                disabled={!currentWorkspace}
+                className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-foreground disabled:opacity-50"
+                title="Create profile"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
           <select
             className="w-full bg-secondary text-foreground rounded-md px-2 py-1.5 text-sm border border-border"
@@ -153,18 +225,74 @@ export function Sidebar() {
               New Chat
             </button>
             
-            {sessions.map((session) => (
-              <button
+            {sessions.map((session: ChatSession) => (
+              <div
                 key={session.id}
-                onClick={() => setCurrentSession(session)}
                 className={cn(
-                  "w-full flex flex-col items-start px-3 py-2 text-sm rounded-md",
+                  "group relative flex items-center rounded-md",
                   currentSession?.id === session.id ? "bg-secondary" : "hover:bg-secondary/50"
                 )}
               >
-                <span className="font-medium">{truncate(session.title, 25)}</span>
-                <span className="text-xs text-muted-foreground">{formatDate(session.updatedAt)}</span>
-              </button>
+                {editingSession === session.id ? (
+                  <div className="flex-1 flex items-center gap-1 px-2 py-1">
+                    <input
+                      type="text"
+                      value={editingSessionTitle}
+                      onChange={(e) => setEditingSessionTitle(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          updateSession.mutate({ id: session.id, data: { title: editingSessionTitle } });
+                        } else if (e.key === 'Escape') {
+                          setEditingSession(null);
+                        }
+                      }}
+                      className="flex-1 bg-background border border-border rounded px-2 py-1 text-sm"
+                      autoFocus
+                    />
+                    <button
+                      onClick={() => setEditingSession(null)}
+                      className="p-1 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => setCurrentSession(session)}
+                      className="flex-1 flex flex-col items-start px-3 py-2 text-sm"
+                    >
+                      <span className="font-medium">{truncate(session.title, 20)}</span>
+                      <span className="text-xs text-muted-foreground">{formatDate(session.updatedAt)}</span>
+                    </button>
+                    <div className="hidden group-hover:flex items-center gap-0.5 pr-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingSession(session.id);
+                          setEditingSessionTitle(session.title);
+                        }}
+                        className="p-1 text-muted-foreground hover:text-foreground rounded"
+                        title="Rename"
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm(`Delete chat "${session.title}"?`)) {
+                            deleteSession.mutate(session.id);
+                          }
+                        }}
+                        className="p-1 text-muted-foreground hover:text-red-400 rounded"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             ))}
           </div>
         )}

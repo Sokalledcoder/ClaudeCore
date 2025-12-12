@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Server, Plus, Power, AlertTriangle, Wrench, RefreshCw } from 'lucide-react';
+import { Server, Plus, Power, AlertTriangle, Wrench, RefreshCw, Pencil, Trash2 } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { api } from '../../api/client';
+import { api, MCPServerConfig } from '../../api/client';
 import { useAppStore } from '../../stores/app.store';
 import { cn } from '../../lib/utils';
 import { AddMCPServerDialog } from '../dialogs/AddMCPServerDialog';
@@ -10,6 +10,14 @@ export function MCPPanel() {
   const queryClient = useQueryClient();
   const { mcpServers, mcpTools, currentWorkspace } = useAppStore();
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [editingServer, setEditingServer] = useState<MCPServerConfig | null>(null);
+
+  const deleteServer = useMutation({
+    mutationFn: (id: string) => api.mcp.deleteServer(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['mcp-servers'] });
+    },
+  });
 
   const testServer = useMutation({
     mutationFn: (id: string) => api.mcp.testServer(id),
@@ -49,7 +57,14 @@ export function MCPPanel() {
         </button>
       </div>
 
-      <AddMCPServerDialog open={showAddDialog} onClose={() => setShowAddDialog(false)} />
+      <AddMCPServerDialog 
+        open={showAddDialog || !!editingServer} 
+        onClose={() => {
+          setShowAddDialog(false);
+          setEditingServer(null);
+        }}
+        editServer={editingServer}
+      />
 
       <div className="space-y-2">
         {mcpServers.map((server) => (
@@ -97,6 +112,24 @@ export function MCPPanel() {
                 title="Discover tools"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setEditingServer(server)}
+                className="p-1.5 hover:bg-background rounded text-muted-foreground"
+                title="Edit server"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => {
+                  if (confirm(`Delete MCP server "${server.name}"?`)) {
+                    deleteServer.mutate(server.id);
+                  }
+                }}
+                className="p-1.5 hover:bg-background rounded text-red-400 hover:text-red-300"
+                title="Delete server"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
               </button>
             </div>
 

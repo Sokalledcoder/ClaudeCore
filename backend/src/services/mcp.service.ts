@@ -278,10 +278,29 @@ export class MCPService {
 
   private async testHttpConnection(config: MCPServerConfig): Promise<{ success: boolean; error?: string }> {
     try {
+      // First try GET to check if server info is available (streamable-http servers)
+      const infoResponse = await fetch(config.url!, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          ...config.headers,
+        },
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (infoResponse.ok) {
+        const info = await infoResponse.json() as { name?: string; transport?: string };
+        if (info.name || info.transport) {
+          return { success: true };
+        }
+      }
+
+      // If GET didn't work, try POST with initialize (standard MCP)
       const response = await fetch(config.url!, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
           ...config.headers,
         },
         body: JSON.stringify({
@@ -289,7 +308,7 @@ export class MCPService {
           id: 1,
           method: 'initialize',
           params: {
-            protocolVersion: '2024-11-05',
+            protocolVersion: '2025-06-18',
             capabilities: {},
             clientInfo: { name: 'agent-control-room', version: '1.0.0' }
           }
@@ -404,44 +423,88 @@ export class MCPService {
 
   private async discoverHttpTools(config: MCPServerConfig): Promise<{ name: string; description?: string; inputSchema?: Record<string, unknown> }[]> {
     try {
-      // First initialize
-      await fetch(config.url!, {
+      // First, initialize session for stateful servers
+      const initResponse = await fetch(config.url!, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...config.headers },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          ...config.headers 
+        },
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: 1,
           method: 'initialize',
           params: {
-            protocolVersion: '2024-11-05',
+            protocolVersion: '2025-06-18',
             capabilities: {},
             clientInfo: { name: 'agent-control-room', version: '1.0.0' }
           }
         }),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(10000),
       });
 
-      // Then list tools
+      // Extract session ID from response if present
+      let sessionId: string | null = null;
+      if (initResponse.ok) {
+        const sessionHeader = initResponse.headers.get('mcp-session-id');
+        if (sessionHeader) {
+          sessionId = sessionHeader;
+        }
+      }
+
+      // Now list tools with session ID if we have one
+      const toolsHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        ...config.headers
+      };
+      if (sessionId) {
+        toolsHeaders['mcp-session-id'] = sessionId;
+      }
+
       const response = await fetch(config.url!, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...config.headers },
+        headers: toolsHeaders,
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: 2,
           method: 'tools/list',
           params: {}
         }),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(10000),
       });
 
       if (response.ok) {
-        const data = await response.json() as { result?: { tools?: { name: string; description?: string; inputSchema?: Record<string, unknown> }[] } };
-        if (data.result?.tools) {
-          return data.result.tools;
+        const contentType = response.headers.get('content-type') || '';
+        
+        if (contentType.includes('text/event-stream')) {
+          // Handle SSE response
+          const text = await response.text();
+          const lines = text.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.result?.tools) {
+                  return data.result.tools;
+                }
+              } catch {
+                // Continue parsing
+              }
+            }
+          }
+        } else {
+          // Handle JSON response
+          const data = await response.json() as { result?: { tools?: { name: string; description?: string; inputSchema?: Record<string, unknown> }[] } };
+          if (data.result?.tools) {
+            return data.result.tools;
+          }
         }
       }
       return [];
-    } catch {
+    } catch (err) {
+      console.error('Error discovering HTTP tools:', err);
       return [];
     }
   }

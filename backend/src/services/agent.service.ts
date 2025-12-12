@@ -75,7 +75,7 @@ export class AgentService extends EventEmitter {
 
   private async executeAgentQuery(
     profile: AgentProfile,
-    projectRoot: string,
+    _projectRoot: string,
     sessionId: string,
     prompt: string,
     runId: string | undefined,
@@ -85,7 +85,6 @@ export class AgentService extends EventEmitter {
     const history = await sessionService.getRecentHistory(sessionId, profile.maxTurnsInHistory);
     
     const skills = await skillsService.listByWorkspace(profile.workspaceId);
-    const mcpConfigs = await mcpService.listByWorkspace(profile.workspaceId);
     const mcpTools = await mcpService.listToolsByWorkspace(profile.workspaceId);
 
     const conversationSlice = contextService.buildConversationSlice(history, profile.maxTurnsInHistory);
@@ -163,28 +162,71 @@ export class AgentService extends EventEmitter {
     // Add current prompt
     messages.push({ role: 'user', content: prompt });
 
-    // Get system prompt from profile
-    const systemPrompt = profile.customSystemPromptAppend || 
+    // Get MCP tools for enabled servers
+    const mcpConfigs = await mcpService.listByWorkspace(profile.workspaceId);
+    const mcpTools = await mcpService.listToolsByWorkspace(profile.workspaceId);
+    
+    // Filter to only enabled servers that are in profile's enabledMcpServers
+    const enabledServerNames = profile.enabledMcpServers || [];
+    const enabledMcpTools = mcpTools.filter(tool => {
+      const serverConfig = mcpConfigs.find(c => c.name === tool.serverName);
+      return serverConfig?.enabled && enabledServerNames.includes(tool.serverName);
+    });
+
+    // Convert MCP tools to Anthropic tool format
+    const tools: Anthropic.Tool[] = enabledMcpTools.map(tool => ({
+      name: tool.fullName,
+      description: tool.description || `Tool ${tool.toolName} from ${tool.serverName}`,
+      input_schema: (tool.inputSchema as Anthropic.Tool['input_schema']) || { type: 'object', properties: {} },
+    }));
+
+    // Build system prompt with MCP context
+    let systemPrompt = profile.customSystemPromptAppend || 
       (profile.systemPromptPreset === 'claude_code' 
         ? 'You are Claude Code, an expert software engineer. Help the user with their coding tasks.'
         : 'You are a helpful AI assistant.');
+
+    // Add MCP server info to system prompt if tools are available
+    if (enabledMcpTools.length > 0) {
+      const toolsByServer = enabledMcpTools.reduce((acc, tool) => {
+        if (!acc[tool.serverName]) acc[tool.serverName] = [];
+        acc[tool.serverName].push(tool.toolName);
+        return acc;
+      }, {} as Record<string, string[]>);
+      
+      const mcpInfo = Object.entries(toolsByServer)
+        .map(([server, toolNames]) => `- ${server}: ${toolNames.join(', ')}`)
+        .join('\n');
+      
+      systemPrompt += `\n\nYou have access to the following MCP servers and tools:\n${mcpInfo}\n\nUse these tools when appropriate to help the user.`;
+    }
 
     if (runId) {
       await traceService.createEvent(runId, 'system_init', {
         model: profile.model,
         messagesCount: messages.length,
+        enabledMcpServers: enabledServerNames,
+        toolCount: tools.length,
       });
     }
 
     let fullResponse = '';
 
     try {
-      const stream = await client.messages.stream({
+      // Build request options
+      const requestOptions: Anthropic.MessageCreateParams = {
         model: profile.model,
         max_tokens: 4096,
         system: systemPrompt,
         messages,
-      });
+      };
+
+      // Only add tools if we have any
+      if (tools.length > 0) {
+        requestOptions.tools = tools;
+      }
+
+      const stream = await client.messages.stream(requestOptions);
 
       for await (const event of stream) {
         if (signal.aborted) break;
