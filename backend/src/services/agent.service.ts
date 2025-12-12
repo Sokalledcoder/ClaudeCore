@@ -211,33 +211,108 @@ export class AgentService extends EventEmitter {
     }
 
     let fullResponse = '';
+    let conversationMessages = [...messages];
 
     try {
-      // Build request options
-      const requestOptions: Anthropic.MessageCreateParams = {
-        model: profile.model,
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages,
-      };
-
-      // Only add tools if we have any
-      if (tools.length > 0) {
-        requestOptions.tools = tools;
-      }
-
-      const stream = await client.messages.stream(requestOptions);
-
-      for await (const event of stream) {
+      // Tool execution loop - max 10 iterations to prevent infinite loops
+      for (let iteration = 0; iteration < 10; iteration++) {
         if (signal.aborted) break;
 
-        if (event.type === 'content_block_delta') {
-          const delta = event.delta as { type: string; text?: string };
-          if (delta.type === 'text_delta' && delta.text) {
-            fullResponse += delta.text;
-            onMessage({ type: 'chunk', content: delta.text });
+        const requestOptions: Anthropic.MessageCreateParams = {
+          model: profile.model,
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages: conversationMessages,
+        };
+
+        if (tools.length > 0) {
+          requestOptions.tools = tools;
+        }
+
+        // Use non-streaming for tool calls to properly handle tool_use blocks
+        const response = await client.messages.create(requestOptions);
+
+        // Process content blocks
+        let hasToolUse = false;
+        const toolUseBlocks: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+
+        for (const block of response.content) {
+          if (block.type === 'text') {
+            fullResponse += block.text;
+            onMessage({ type: 'chunk', content: block.text });
+          } else if (block.type === 'tool_use') {
+            hasToolUse = true;
+            toolUseBlocks.push({
+              id: block.id,
+              name: block.name,
+              input: block.input as Record<string, unknown>,
+            });
           }
         }
+
+        // If no tool use, we're done
+        if (!hasToolUse || response.stop_reason === 'end_turn') {
+          break;
+        }
+
+        // Execute tools and collect results
+        const toolResults: Array<{ type: 'tool_result'; tool_use_id: string; content: string }> = [];
+
+        for (const toolUse of toolUseBlocks) {
+          if (signal.aborted) break;
+
+          // Parse server and tool name from fullName (mcp__ServerName__toolName)
+          const parts = toolUse.name.split('__');
+          if (parts.length >= 3 && parts[0] === 'mcp') {
+            const serverName = parts[1];
+            const toolName = parts.slice(2).join('__');
+
+            onMessage({ type: 'tool_call', toolName: toolUse.name, content: JSON.stringify(toolUse.input) });
+
+            if (runId) {
+              await traceService.createEvent(runId, 'pre_tool_use', {
+                toolName: toolUse.name,
+                serverName,
+                input: toolUse.input,
+              });
+            }
+
+            // Execute the tool
+            const result = await mcpService.executeTool(serverName, toolName, toolUse.input, profile.workspaceId);
+
+            const resultContent = result.success 
+              ? JSON.stringify(result.result, null, 2)
+              : `Error: ${result.error}`;
+
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: toolUse.id,
+              content: resultContent,
+            });
+
+            onMessage({ type: 'tool_result', toolName: toolUse.name, content: resultContent });
+
+            if (runId) {
+              await traceService.createEvent(runId, 'post_tool_use', {
+                toolName: toolUse.name,
+                success: result.success,
+                result: result.success ? result.result : result.error,
+              });
+            }
+          }
+        }
+
+        // Add assistant message with tool use to conversation
+        conversationMessages.push({
+          role: 'assistant',
+          content: response.content as unknown as string,
+        });
+
+        // Add tool results to conversation
+        conversationMessages.push({
+          role: 'user',
+          content: toolResults as unknown as string,
+        });
       }
 
       // Save assistant message

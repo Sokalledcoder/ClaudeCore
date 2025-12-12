@@ -509,6 +509,204 @@ export class MCPService {
     }
   }
 
+  async executeTool(
+    serverName: string, 
+    toolName: string, 
+    args: Record<string, unknown>,
+    workspaceId: string
+  ): Promise<{ success: boolean; result?: unknown; error?: string }> {
+    try {
+      const configs = await this.listByWorkspace(workspaceId);
+      const config = configs.find(c => c.name === serverName);
+      
+      if (!config) {
+        return { success: false, error: `MCP server "${serverName}" not found` };
+      }
+
+      if (config.transport === 'http' || config.transport === 'sse') {
+        return this.executeHttpTool(config, toolName, args);
+      } else if (config.transport === 'stdio') {
+        return this.executeStdioTool(config, toolName, args);
+      }
+
+      return { success: false, error: `Unsupported transport: ${config.transport}` };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
+    }
+  }
+
+  private async executeHttpTool(
+    config: MCPServerConfig,
+    toolName: string,
+    args: Record<string, unknown>
+  ): Promise<{ success: boolean; result?: unknown; error?: string }> {
+    try {
+      // Initialize session first
+      const initResponse = await fetch(config.url!, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          ...config.headers,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            clientInfo: { name: 'agent-control-room', version: '1.0.0' }
+          }
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      let sessionId: string | null = null;
+      if (initResponse.ok) {
+        sessionId = initResponse.headers.get('mcp-session-id');
+      }
+
+      // Execute the tool
+      const toolHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        ...config.headers,
+      };
+      if (sessionId) {
+        toolHeaders['mcp-session-id'] = sessionId;
+      }
+
+      const response = await fetch(config.url!, {
+        method: 'POST',
+        headers: toolHeaders,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: {
+            name: toolName,
+            arguments: args
+          }
+        }),
+        signal: AbortSignal.timeout(60000),
+      });
+
+      if (response.ok) {
+        const contentType = response.headers.get('content-type') || '';
+        
+        if (contentType.includes('text/event-stream')) {
+          const text = await response.text();
+          const lines = text.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.result) {
+                  return { success: true, result: data.result };
+                }
+                if (data.error) {
+                  return { success: false, error: data.error.message || 'Tool execution failed' };
+                }
+              } catch {
+                // Continue parsing
+              }
+            }
+          }
+        } else {
+          const data = await response.json() as { result?: unknown; error?: { message?: string } };
+          if (data.result) {
+            return { success: true, result: data.result };
+          }
+          if (data.error) {
+            return { success: false, error: data.error.message || 'Tool execution failed' };
+          }
+        }
+      }
+      
+      return { success: false, error: `HTTP ${response.status}: ${response.statusText}` };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : 'Tool execution failed' };
+    }
+  }
+
+  private async executeStdioTool(
+    config: MCPServerConfig,
+    toolName: string,
+    args: Record<string, unknown>
+  ): Promise<{ success: boolean; result?: unknown; error?: string }> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        if (proc && !proc.killed) proc.kill();
+        resolve({ success: false, error: 'Tool execution timed out' });
+      }, 30000);
+
+      let proc: ChildProcess | null = null;
+      try {
+        proc = spawn(config.command!, config.args, {
+          env: { ...process.env, ...config.env },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        let buffer = '';
+
+        proc.stdout?.on('data', (data) => {
+          buffer += data.toString();
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const msg = JSON.parse(line);
+              if (msg.id === 1 && msg.result) {
+                // Initialize done, send tool call
+                const toolRequest = JSON.stringify({
+                  jsonrpc: '2.0',
+                  id: 2,
+                  method: 'tools/call',
+                  params: { name: toolName, arguments: args }
+                }) + '\n';
+                proc?.stdin?.write(toolRequest);
+              } else if (msg.id === 2) {
+                clearTimeout(timeout);
+                proc?.kill();
+                if (msg.result) {
+                  resolve({ success: true, result: msg.result });
+                } else if (msg.error) {
+                  resolve({ success: false, error: msg.error.message || 'Tool failed' });
+                }
+              }
+            } catch {
+              // Continue
+            }
+          }
+        });
+
+        proc.on('error', (err) => {
+          clearTimeout(timeout);
+          resolve({ success: false, error: err.message });
+        });
+
+        // Send initialize
+        const initRequest = JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            clientInfo: { name: 'agent-control-room', version: '1.0.0' }
+          }
+        }) + '\n';
+        proc.stdin?.write(initRequest);
+      } catch (err) {
+        clearTimeout(timeout);
+        resolve({ success: false, error: err instanceof Error ? err.message : 'Failed to start process' });
+      }
+    });
+  }
+
   buildMcpServersConfig(
     configs: MCPServerConfig[],
     enabledServers: string[]
