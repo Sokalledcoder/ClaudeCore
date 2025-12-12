@@ -12,7 +12,7 @@ import {
   Trash2,
   X
 } from 'lucide-react';
-import { api, ChatSession } from '../../api/client';
+import { api, ChatSession, AgentProfile, Workspace } from '../../api/client';
 import { useAppStore } from '../../stores/app.store';
 import { cn, formatDate, truncate } from '../../lib/utils';
 import { CreateWorkspaceDialog } from '../dialogs/CreateWorkspaceDialog';
@@ -36,7 +36,9 @@ export function Sidebar() {
 
   const [activeTab, setActiveTab] = useState<'chats' | 'jobs'>('chats');
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
+  const [editingWorkspace, setEditingWorkspace] = useState<Workspace | null>(null);
   const [showCreateProfile, setShowCreateProfile] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<AgentProfile | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [editingSession, setEditingSession] = useState<string | null>(null);
   const [editingSessionTitle, setEditingSessionTitle] = useState('');
@@ -110,17 +112,26 @@ export function Sidebar() {
             <label className="text-xs text-muted-foreground">Workspace</label>
             <div className="flex items-center gap-0.5">
               {currentWorkspace && (
-                <button
-                  onClick={() => {
-                    if (confirm(`Delete workspace "${currentWorkspace.name}"? This will delete all associated data.`)) {
-                      deleteWorkspace.mutate(currentWorkspace.id);
-                    }
-                  }}
-                  className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-red-400"
-                  title="Delete workspace"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                <>
+                  <button
+                    onClick={() => setEditingWorkspace(currentWorkspace)}
+                    className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-foreground"
+                    title="Edit workspace"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Delete workspace "${currentWorkspace.name}"? This will delete all associated data.`)) {
+                        deleteWorkspace.mutate(currentWorkspace.id);
+                      }
+                    }}
+                    className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-red-400"
+                    title="Delete workspace"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </>
               )}
               <button
                 onClick={() => setShowCreateWorkspace(true)}
@@ -151,17 +162,26 @@ export function Sidebar() {
             <label className="text-xs text-muted-foreground">Agent Profile</label>
             <div className="flex items-center gap-0.5">
               {currentProfile && (
-                <button
-                  onClick={() => {
-                    if (confirm(`Delete profile "${currentProfile.name}"?`)) {
-                      deleteProfile.mutate(currentProfile.id);
-                    }
-                  }}
-                  className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-red-400"
-                  title="Delete profile"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                <>
+                  <button
+                    onClick={() => setEditingProfile(currentProfile)}
+                    className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-foreground"
+                    title="Edit profile"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Delete profile "${currentProfile.name}"?`)) {
+                        deleteProfile.mutate(currentProfile.id);
+                      }
+                    }}
+                    className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-red-400"
+                    title="Delete profile"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </>
               )}
               <button
                 onClick={() => setShowCreateProfile(true)}
@@ -338,12 +358,20 @@ export function Sidebar() {
       </div>
 
       <CreateWorkspaceDialog 
-        open={showCreateWorkspace} 
-        onClose={() => setShowCreateWorkspace(false)} 
+        open={showCreateWorkspace || !!editingWorkspace} 
+        onClose={() => {
+          setShowCreateWorkspace(false);
+          setEditingWorkspace(null);
+        }}
+        editWorkspace={editingWorkspace}
       />
       <CreateProfileDialog 
-        open={showCreateProfile} 
-        onClose={() => setShowCreateProfile(false)} 
+        open={showCreateProfile || !!editingProfile} 
+        onClose={() => {
+          setShowCreateProfile(false);
+          setEditingProfile(null);
+        }}
+        editProfile={editingProfile}
       />
       <SettingsDialog 
         open={showSettings} 

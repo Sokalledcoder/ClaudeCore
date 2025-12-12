@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { X, Bot, Info } from 'lucide-react';
-import { api } from '../../api/client';
+import { X, Bot, Info, Server } from 'lucide-react';
+import { api, AgentProfile } from '../../api/client';
 import { useAppStore } from '../../stores/app.store';
 
 interface Props {
   open: boolean;
   onClose: () => void;
+  editProfile?: AgentProfile | null;
 }
 
 const CLAUDE_MODELS = [
@@ -37,31 +38,66 @@ const PROMPT_PRESETS = [
   },
 ];
 
-export function CreateProfileDialog({ open, onClose }: Props) {
+export function CreateProfileDialog({ open, onClose, editProfile }: Props) {
   const queryClient = useQueryClient();
-  const { currentWorkspace, setCurrentProfile } = useAppStore();
+  const { currentWorkspace, setCurrentProfile, mcpServers } = useAppStore();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [model, setModel] = useState('claude-sonnet-4-5-20250929');
   const [selectedPreset, setSelectedPreset] = useState('claude_code');
   const [systemPrompt, setSystemPrompt] = useState(PROMPT_PRESETS[0].defaultPrompt);
+  const [enabledMcpServers, setEnabledMcpServers] = useState<string[]>([]);
+
+  const isEditing = !!editProfile;
+
+  // Populate form when editing
+  useEffect(() => {
+    if (editProfile) {
+      setName(editProfile.name);
+      setDescription(editProfile.description || '');
+      setModel(editProfile.model);
+      setSystemPrompt(editProfile.customSystemPromptAppend || '');
+      setEnabledMcpServers(editProfile.enabledMcpServers || []);
+      setSelectedPreset('custom');
+    } else {
+      resetForm();
+    }
+  }, [editProfile]);
+
+  const resetForm = () => {
+    setName('');
+    setDescription('');
+    setModel('claude-sonnet-4-5-20250929');
+    setSelectedPreset('claude_code');
+    setSystemPrompt(PROMPT_PRESETS[0].defaultPrompt);
+    setEnabledMcpServers([]);
+  };
 
   useEffect(() => {
-    const preset = PROMPT_PRESETS.find(p => p.id === selectedPreset);
-    if (preset) {
-      setSystemPrompt(preset.defaultPrompt);
+    if (!editProfile) {
+      const preset = PROMPT_PRESETS.find(p => p.id === selectedPreset);
+      if (preset) {
+        setSystemPrompt(preset.defaultPrompt);
+      }
     }
-  }, [selectedPreset]);
+  }, [selectedPreset, editProfile]);
 
   const createProfile = useMutation({
     mutationFn: api.profiles.create,
     onSuccess: (profile) => {
       queryClient.invalidateQueries({ queryKey: ['profiles'] });
       setCurrentProfile(profile);
-      setName('');
-      setDescription('');
-      setSystemPrompt(PROMPT_PRESETS[0].defaultPrompt);
-      setSelectedPreset('claude_code');
+      resetForm();
+      onClose();
+    },
+  });
+
+  const updateProfile = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof api.profiles.update>[1] }) =>
+      api.profiles.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      resetForm();
       onClose();
     },
   });
@@ -70,13 +106,28 @@ export function CreateProfileDialog({ open, onClose }: Props) {
     e.preventDefault();
     if (!name.trim() || !currentWorkspace) return;
     
-    createProfile.mutate({
+    const profileData = {
       workspaceId: currentWorkspace.id,
       name: name.trim(),
       description: description.trim(),
       model,
       systemPrompt: systemPrompt.trim() || null,
-    });
+      enabledMcpServers,
+    };
+
+    if (isEditing && editProfile) {
+      updateProfile.mutate({ id: editProfile.id, data: profileData });
+    } else {
+      createProfile.mutate(profileData);
+    }
+  };
+
+  const toggleMcpServer = (serverName: string) => {
+    setEnabledMcpServers(prev => 
+      prev.includes(serverName) 
+        ? prev.filter(n => n !== serverName)
+        : [...prev, serverName]
+    );
   };
 
   if (!open) return null;
@@ -99,8 +150,8 @@ export function CreateProfileDialog({ open, onClose }: Props) {
             <Bot className="w-5 h-5 text-primary" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold">Create Agent Profile</h2>
-            <p className="text-sm text-muted-foreground">Configure model and behavior</p>
+            <h2 className="text-lg font-semibold">{isEditing ? 'Edit Agent Profile' : 'Create Agent Profile'}</h2>
+            <p className="text-sm text-muted-foreground">{isEditing ? 'Update profile settings' : 'Configure model and behavior'}</p>
           </div>
         </div>
 
@@ -174,13 +225,42 @@ export function CreateProfileDialog({ open, onClose }: Props) {
               value={systemPrompt}
               onChange={(e) => setSystemPrompt(e.target.value)}
               placeholder="Define the agent's role, personality, and instructions..."
-              rows={8}
+              rows={6}
               className="w-full px-3 py-2 bg-input border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary text-sm font-mono"
             />
             <p className="text-xs text-muted-foreground mt-1">
               Edit freely. This prompt defines how the agent behaves.
             </p>
           </div>
+
+          {mcpServers.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium mb-1.5 flex items-center gap-2">
+                <Server className="w-4 h-4" />
+                MCP Servers
+              </label>
+              <p className="text-xs text-muted-foreground mb-2">
+                Select which MCP servers this profile can use
+              </p>
+              <div className="space-y-2 max-h-32 overflow-y-auto border border-border rounded-md p-2">
+                {mcpServers.map((server) => (
+                  <label key={server.id} className="flex items-center gap-2 cursor-pointer hover:bg-secondary/50 p-1 rounded">
+                    <input
+                      type="checkbox"
+                      checked={enabledMcpServers.includes(server.name)}
+                      onChange={() => toggleMcpServer(server.name)}
+                      className="rounded border-border"
+                    />
+                    <span className="text-sm">{server.name}</span>
+                    <span className="text-xs text-muted-foreground">({server.transport})</span>
+                    {server.lastStatus === 'connected' && (
+                      <span className="text-xs text-green-400">●</span>
+                    )}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="flex gap-3 pt-2">
             <button
@@ -192,10 +272,12 @@ export function CreateProfileDialog({ open, onClose }: Props) {
             </button>
             <button
               type="submit"
-              disabled={!name.trim() || !currentWorkspace || createProfile.isPending}
+              disabled={!name.trim() || !currentWorkspace || createProfile.isPending || updateProfile.isPending}
               className="flex-1 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
             >
-              {createProfile.isPending ? 'Creating...' : 'Create Profile'}
+              {createProfile.isPending || updateProfile.isPending 
+                ? (isEditing ? 'Saving...' : 'Creating...') 
+                : (isEditing ? 'Save Changes' : 'Create Profile')}
             </button>
           </div>
         </form>

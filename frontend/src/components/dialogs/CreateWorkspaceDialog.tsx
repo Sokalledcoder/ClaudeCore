@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { X, FolderPlus, ChevronRight, Home, ArrowUp, Loader2, Check, Plus } from 'lucide-react';
-import { api } from '../../api/client';
+import { api, Workspace } from '../../api/client';
 import { useAppStore } from '../../stores/app.store';
 
 interface Props {
   open: boolean;
   onClose: () => void;
+  editWorkspace?: Workspace | null;
 }
 
 interface DirectoryEntry {
@@ -15,7 +16,7 @@ interface DirectoryEntry {
   isDirectory: boolean;
 }
 
-export function CreateWorkspaceDialog({ open, onClose }: Props) {
+export function CreateWorkspaceDialog({ open, onClose, editWorkspace }: Props) {
   const queryClient = useQueryClient();
   const { setCurrentWorkspace } = useAppStore();
   const [name, setName] = useState('');
@@ -29,12 +30,27 @@ export function CreateWorkspaceDialog({ open, onClose }: Props) {
   const [newFolderName, setNewFolderName] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
 
+  const isEditing = !!editWorkspace;
+
+  // Populate form when editing
   useEffect(() => {
-    if (open) {
+    if (editWorkspace) {
+      setName(editWorkspace.name);
+      setProjectRoot(editWorkspace.projectRoot);
+      setShowBrowser(false);
+    } else {
+      setName('');
+      setProjectRoot('');
+      setShowBrowser(true);
+    }
+  }, [editWorkspace]);
+
+  useEffect(() => {
+    if (open && !editWorkspace) {
       loadQuickPaths();
       browsePath();
     }
-  }, [open]);
+  }, [open, editWorkspace]);
 
   const loadQuickPaths = async () => {
     try {
@@ -100,10 +116,26 @@ export function CreateWorkspaceDialog({ open, onClose }: Props) {
     },
   });
 
+  const updateWorkspace = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof api.workspaces.update>[1] }) =>
+      api.workspaces.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      setName('');
+      setProjectRoot('');
+      onClose();
+    },
+  });
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !projectRoot.trim()) return;
-    createWorkspace.mutate({ name: name.trim(), projectRoot: projectRoot.trim() });
+    
+    if (isEditing && editWorkspace) {
+      updateWorkspace.mutate({ id: editWorkspace.id, data: { name: name.trim(), projectRoot: projectRoot.trim() } });
+    } else {
+      createWorkspace.mutate({ name: name.trim(), projectRoot: projectRoot.trim() });
+    }
   };
 
   if (!open) return null;
@@ -124,8 +156,8 @@ export function CreateWorkspaceDialog({ open, onClose }: Props) {
             <FolderPlus className="w-5 h-5 text-primary" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold">Create Workspace</h2>
-            <p className="text-sm text-muted-foreground">Select a project folder</p>
+            <h2 className="text-lg font-semibold">{isEditing ? 'Edit Workspace' : 'Create Workspace'}</h2>
+            <p className="text-sm text-muted-foreground">{isEditing ? 'Update workspace settings' : 'Select a project folder'}</p>
           </div>
         </div>
 
