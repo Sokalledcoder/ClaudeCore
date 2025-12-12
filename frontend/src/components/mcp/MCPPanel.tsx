@@ -1,12 +1,15 @@
+import { useState } from 'react';
 import { Server, Plus, Power, AlertTriangle, Wrench, RefreshCw } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import { useAppStore } from '../../stores/app.store';
 import { cn } from '../../lib/utils';
+import { AddMCPServerDialog } from '../dialogs/AddMCPServerDialog';
 
 export function MCPPanel() {
   const queryClient = useQueryClient();
   const { mcpServers, mcpTools, currentWorkspace } = useAppStore();
+  const [showAddDialog, setShowAddDialog] = useState(false);
 
   const testServer = useMutation({
     mutationFn: (id: string) => api.mcp.testServer(id),
@@ -37,10 +40,16 @@ export function MCPPanel() {
     <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-thin">
       <div className="flex items-center justify-between px-1">
         <h3 className="text-sm font-medium text-muted-foreground">MCP Servers</h3>
-        <button className="p-1.5 hover:bg-secondary rounded-md text-muted-foreground">
+        <button 
+          onClick={() => setShowAddDialog(true)}
+          className="p-1.5 hover:bg-secondary rounded-md text-muted-foreground"
+          title="Add MCP Server"
+        >
           <Plus className="w-4 h-4" />
         </button>
       </div>
+
+      <AddMCPServerDialog open={showAddDialog} onClose={() => setShowAddDialog(false)} />
 
       <div className="space-y-2">
         {mcpServers.map((server) => (
@@ -127,7 +136,9 @@ export function MCPPanel() {
                   <span className="text-xs font-mono truncate block">{tool.fullName}</span>
                 </div>
                 {tool.isHighRisk && (
-                  <AlertTriangle className="w-3 h-3 text-yellow-400" title="High-risk tool" />
+                  <span title="High-risk tool">
+                    <AlertTriangle className="w-3 h-3 text-yellow-400" />
+                  </span>
                 )}
               </div>
             ))}

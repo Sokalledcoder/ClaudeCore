@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { FileCode, Plus, Shield, ShieldAlert, FolderOpen, User } from 'lucide-react';
 import { useAppStore } from '../../stores/app.store';
-import { cn } from '../../lib/utils';
+import { AddSkillDialog } from '../dialogs/AddSkillDialog';
 
 export function SkillsPanel() {
   const { skills, currentWorkspace } = useAppStore();
+  const [showAddDialog, setShowAddDialog] = useState(false);
 
   const userSkills = skills.filter(s => s.scope === 'user');
   const projectSkills = skills.filter(s => s.scope === 'project');
@@ -23,10 +25,16 @@ export function SkillsPanel() {
     <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-thin">
       <div className="flex items-center justify-between px-1">
         <h3 className="text-sm font-medium text-muted-foreground">Skills</h3>
-        <button className="p-1.5 hover:bg-secondary rounded-md text-muted-foreground">
+        <button 
+          onClick={() => setShowAddDialog(true)}
+          className="p-1.5 hover:bg-secondary rounded-md text-muted-foreground"
+          title="Add Skill"
+        >
           <Plus className="w-4 h-4" />
         </button>
       </div>
+
+      <AddSkillDialog open={showAddDialog} onClose={() => setShowAddDialog(false)} />
 
       {projectSkills.length > 0 && (
         <div>

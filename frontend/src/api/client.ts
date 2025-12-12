@@ -105,6 +105,8 @@ export const api = {
       }),
     delete: (workspaceId: string, slug: string) =>
       fetchApi<void>(`/skills/${slug}?workspaceId=${workspaceId}`, { method: 'DELETE' }),
+    importFromPath: (data: { workspaceId: string; paths: string[]; scope: 'user' | 'project' }) =>
+      fetchApi<SkillMetadata[]>('/skills/import', { method: 'POST', body: JSON.stringify(data) }),
     generateFromChat: (data: { workspaceId: string; chatHistory: ChatMessage[]; skillName: string }) =>
       fetchApi<{ content: string }>('/skills/generate-from-chat', {
         method: 'POST',
@@ -306,7 +308,7 @@ export interface CreateChatSessionInput {
 
 export interface CreateSkillInput {
   workspaceId: string;
-  slug: string;
+  slug?: string;
   name: string;
   description?: string;
   content: string;

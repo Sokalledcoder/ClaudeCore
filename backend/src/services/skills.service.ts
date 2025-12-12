@@ -208,9 +208,79 @@ export class SkillsService {
     });
   }
 
-  async generateSkillFromChat(
+  async importFromPaths(
     workspaceId: string,
     projectRoot: string,
+    paths: string[],
+    scope: SkillScope
+  ): Promise<SkillMetadata[]> {
+    const importedSkills: SkillMetadata[] = [];
+    const baseDir = scope === 'user' ? USER_SKILLS_DIR : this.getProjectSkillsDir(projectRoot);
+
+    for (const sourcePath of paths) {
+      const resolvedPath = sourcePath.replace('~', os.homedir());
+      
+      try {
+        // Check if it's a valid skill directory with SKILL.md
+        const skillMdPath = path.join(resolvedPath, 'SKILL.md');
+        const content = await fs.readFile(skillMdPath, 'utf-8');
+        const { data: frontmatter } = matter(content);
+        
+        // Get the folder name as slug
+        const slug = path.basename(resolvedPath);
+        const targetDir = path.join(baseDir, slug);
+        
+        // Copy the entire skill directory
+        await fs.mkdir(targetDir, { recursive: true });
+        
+        // Copy all files from source to target
+        const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+        for (const entry of entries) {
+          const srcFile = path.join(resolvedPath, entry.name);
+          const destFile = path.join(targetDir, entry.name);
+          if (entry.isFile()) {
+            await fs.copyFile(srcFile, destFile);
+          }
+        }
+        
+        const skill: SkillMetadata = {
+          id: uuidv4(),
+          workspaceId,
+          slug,
+          path: path.join(targetDir, 'SKILL.md'),
+          name: (frontmatter.name as string) ?? slug,
+          description: (frontmatter.description as string) ?? '',
+          scope,
+          trusted: (frontmatter.trusted as boolean) ?? false,
+          lastIndexedAt: new Date(),
+        };
+
+        await prisma.skillMetadata.upsert({
+          where: { workspaceId_slug: { workspaceId, slug } },
+          update: {
+            path: skill.path,
+            name: skill.name,
+            description: skill.description,
+            scope: skill.scope,
+            trusted: skill.trusted,
+            lastIndexedAt: skill.lastIndexedAt,
+          },
+          create: skill,
+        });
+
+        importedSkills.push(skill);
+      } catch (err) {
+        console.error(`Failed to import skill from ${sourcePath}:`, err);
+        // Continue with other paths
+      }
+    }
+
+    return importedSkills;
+  }
+
+  async generateSkillFromChat(
+    _workspaceId: string,
+    _projectRoot: string,
     chatHistory: { role: string; content: string }[],
     skillName: string
   ): Promise<string> {

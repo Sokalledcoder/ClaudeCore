@@ -72,6 +72,26 @@ router.delete('/:slug', async (req: Request, res: Response, next: NextFunction) 
   }
 });
 
+router.post('/import', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { workspaceId, paths, scope } = req.body;
+    if (!workspaceId || !paths || !Array.isArray(paths)) {
+      res.status(400).json({ error: 'workspaceId and paths array are required' });
+      return;
+    }
+    const workspace = await workspaceService.getById(workspaceId);
+    const importedSkills = await skillsService.importFromPaths(
+      workspaceId,
+      workspace.projectRoot,
+      paths,
+      scope || 'project'
+    );
+    res.status(201).json(importedSkills);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/generate-from-chat', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { workspaceId, chatHistory, skillName } = req.body;

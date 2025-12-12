@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import Anthropic from '@anthropic-ai/sdk';
 import { profileService } from './profile.service.js';
 import { sessionService } from './session.service.js';
 import { mcpService } from './mcp.service.js';
@@ -10,8 +11,7 @@ import { workspaceService } from './workspace.service.js';
 import type { 
   AgentProfile, 
   ChatMessage, 
-  StreamingMessage, 
-  TraceEventType,
+  StreamingMessage,
   Run 
 } from '../types/index.js';
 
@@ -111,17 +111,15 @@ export class AgentService extends EventEmitter {
       });
     }
 
-    const mcpServersConfig = mcpService.buildMcpServersConfig(mcpConfigs, profile.enabledMcpServers);
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const hasValidApiKey = apiKey && apiKey !== 'your-api-key-here';
 
-    const hasClaudeAgentSdk = await this.checkClaudeAgentSdk();
-
-    if (hasClaudeAgentSdk) {
-      await this.runWithClaudeAgentSdk(
+    if (hasValidApiKey) {
+      await this.runWithAnthropicSdk(
         profile,
-        projectRoot,
+        sessionId,
         prompt,
         history,
-        mcpServersConfig,
         runId,
         onMessage,
         signal
@@ -137,119 +135,86 @@ export class AgentService extends EventEmitter {
     }
   }
 
-  private async checkClaudeAgentSdk(): Promise<boolean> {
-    try {
-      await import('@anthropic-ai/claude-agent-sdk');
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private async runWithClaudeAgentSdk(
+  private async runWithAnthropicSdk(
     profile: AgentProfile,
-    projectRoot: string,
+    sessionId: string,
     prompt: string,
     history: ChatMessage[],
-    mcpServersConfig: Record<string, unknown>,
     runId: string | undefined,
     onMessage: (message: StreamingMessage) => void,
     signal: AbortSignal
   ): Promise<void> {
-    const { query } = await import('@anthropic-ai/claude-agent-sdk');
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    
+    if (!apiKey || apiKey === 'your-api-key-here') {
+      throw new Error('ANTHROPIC_API_KEY not configured. Please set your API key in Settings or in backend/.env');
+    }
 
-    const systemPromptConfig = profile.systemPromptPreset === 'claude_code'
-      ? { type: 'preset' as const, preset: 'claude_code' as const, append: profile.customSystemPromptAppend ?? undefined }
-      : profile.customSystemPromptAppend ?? 'You are a helpful AI assistant.';
+    const client = new Anthropic({ apiKey });
 
-    const hooks = this.buildHooks(runId, onMessage);
+    // Build messages from history
+    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    for (const msg of history) {
+      messages.push({
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content,
+      });
+    }
+    // Add current prompt
+    messages.push({ role: 'user', content: prompt });
 
-    const response = query({
-      prompt,
-      options: {
+    // Get system prompt from profile
+    const systemPrompt = profile.customSystemPromptAppend || 
+      (profile.systemPromptPreset === 'claude_code' 
+        ? 'You are Claude Code, an expert software engineer. Help the user with their coding tasks.'
+        : 'You are a helpful AI assistant.');
+
+    if (runId) {
+      await traceService.createEvent(runId, 'system_init', {
         model: profile.model,
-        cwd: projectRoot,
-        systemPrompt: systemPromptConfig,
-        allowedTools: profile.allowedTools.length > 0 ? profile.allowedTools : undefined,
-        mcpServers: mcpServersConfig as Record<string, { command?: string; args?: string[] }>,
-        settingSources: profile.enabledSkillScopes as ('user' | 'project')[],
-        hooks,
-        abortController: { signal } as AbortController,
-        maxTurns: 50,
-      },
-    });
+        messagesCount: messages.length,
+      });
+    }
 
     let fullResponse = '';
 
-    for await (const message of response) {
-      if (signal.aborted) break;
+    try {
+      const stream = await client.messages.stream({
+        model: profile.model,
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages,
+      });
 
-      if (message.type === 'assistant') {
-        const content = typeof message.message?.content === 'string' 
-          ? message.message.content 
-          : JSON.stringify(message.message?.content);
-        
-        fullResponse += content;
-        onMessage({ type: 'chunk', content });
-      } else if (message.type === 'stream_event') {
-        if (message.event?.type === 'content_block_delta') {
-          const delta = (message.event as { delta?: { text?: string } }).delta;
-          if (delta?.text) {
+      for await (const event of stream) {
+        if (signal.aborted) break;
+
+        if (event.type === 'content_block_delta') {
+          const delta = event.delta as { type: string; text?: string };
+          if (delta.type === 'text_delta' && delta.text) {
             fullResponse += delta.text;
             onMessage({ type: 'chunk', content: delta.text });
           }
         }
-      } else if (message.type === 'system' && message.subtype === 'init') {
-        if (runId) {
-          await traceService.createEvent(runId, 'system_init', {
-            sessionId: message.session_id,
-            model: message.model,
-            tools: message.tools,
-            mcpServers: message.mcp_servers,
-          });
-        }
-      } else if (message.type === 'result') {
-        if (runId) {
-          await traceService.createEvent(runId, 'stop', {
-            subtype: message.subtype,
-            result: message.result,
-            usage: message.usage,
-            totalCost: message.total_cost_usd,
-          });
-        }
       }
-    }
 
-    if (fullResponse) {
-      await sessionService.addMessage(
-        history[0]?.sessionId ?? '',
-        'assistant',
-        fullResponse
-      );
-    }
+      // Save assistant message
+      if (fullResponse) {
+        await sessionService.addMessage(sessionId, 'assistant', fullResponse);
+      }
 
-    onMessage({ type: 'complete' });
-  }
-
-  private buildHooks(
-    runId: string | undefined,
-    onMessage: (message: StreamingMessage) => void
-  ): Record<string, { matcher?: string; hooks: ((input: unknown) => Promise<{ continue?: boolean }>)[] }[]> {
-    const createHook = (type: TraceEventType) => async (input: unknown) => {
       if (runId) {
-        const event = await traceService.createEvent(runId, type, input as Record<string, unknown>);
-        onMessage({ type: 'trace_event', traceEvent: event });
+        await traceService.createEvent(runId, 'stop', {
+          responseLength: fullResponse.length,
+        });
       }
-      return { continue: true };
-    };
 
-    return {
-      PreToolUse: [{ hooks: [createHook('pre_tool_use')] }],
-      PostToolUse: [{ hooks: [createHook('post_tool_use')] }],
-      SubagentStart: [{ hooks: [createHook('subagent_start')] }],
-      SubagentStop: [{ hooks: [createHook('subagent_stop')] }],
-      Notification: [{ hooks: [createHook('notification')] }],
-    };
+      onMessage({ type: 'complete' });
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      console.error('Anthropic API error:', errorMsg);
+      throw error;
+    }
   }
 
   private async runMockAgent(
