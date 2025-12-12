@@ -232,19 +232,20 @@ export class AgentService extends EventEmitter {
       });
     }
 
-    const mockResponse = `I received your message: "${prompt}"
+    const mockResponse = `⚠️ **API Key Not Configured**
 
-This is a mock response because the Claude Agent SDK is not installed or configured.
+Your message: "${prompt}"
 
-To enable full functionality:
-1. Install the Claude Agent SDK: npm install @anthropic-ai/claude-agent-sdk
-2. Set your ANTHROPIC_API_KEY environment variable
+**To get real Claude responses:**
+1. Click the ⚙️ Settings icon in the sidebar
+2. Select "API Key" connection mode
+3. Enter your Anthropic API key
+4. Click Save
 
-Profile: ${profile.name}
-Model: ${profile.model}
-History messages: ${history.length}
-Allowed tools: ${profile.allowedTools.length > 0 ? profile.allowedTools.join(', ') : 'all'}
-Enabled MCP servers: ${profile.enabledMcpServers.length > 0 ? profile.enabledMcpServers.join(', ') : 'none'}`;
+The API key will now persist across server restarts.
+
+---
+*This is a mock response. Profile: ${profile.name} | Model: ${profile.model}*`;
 
     const words = mockResponse.split(' ');
     for (const word of words) {

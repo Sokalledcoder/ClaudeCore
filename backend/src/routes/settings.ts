@@ -18,7 +18,13 @@ const settingsPath = path.join(process.cwd(), '.settings.json');
 try {
   if (fs.existsSync(settingsPath)) {
     const data = fs.readFileSync(settingsPath, 'utf-8');
-    settings = { ...settings, ...JSON.parse(data) };
+    const loaded = JSON.parse(data);
+    settings = { ...settings, ...loaded };
+    // If API key was saved, also set it as env var on startup
+    if (loaded.apiKey) {
+      process.env.ANTHROPIC_API_KEY = loaded.apiKey;
+      console.log('✓ Loaded API key from settings file');
+    }
   }
 } catch (e) {
   console.warn('Could not load settings file:', e);
@@ -79,17 +85,21 @@ router.put('/', (req, res) => {
     settings.apiKey = apiKey || undefined;
   }
 
-  // Save to file (excluding sensitive data in plain text for now)
+  // Save to file (including API key - stored locally, user's machine)
   try {
-    fs.writeFileSync(settingsPath, JSON.stringify({
+    const saveData: Record<string, unknown> = {
       connectionMode: settings.connectionMode,
-      // Don't save API key to file - use env var instead
-    }, null, 2));
+    };
+    // Save API key to settings file for persistence across restarts
+    if (settings.apiKey) {
+      saveData.apiKey = settings.apiKey;
+    }
+    fs.writeFileSync(settingsPath, JSON.stringify(saveData, null, 2));
   } catch (e) {
     console.warn('Could not save settings file:', e);
   }
 
-  // If API key provided, set it as env var for this process
+  // Also set as env var for immediate use
   if (apiKey) {
     process.env.ANTHROPIC_API_KEY = apiKey;
   }

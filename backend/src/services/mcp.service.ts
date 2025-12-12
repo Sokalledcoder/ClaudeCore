@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { spawn, ChildProcess } from 'child_process';
 import prisma from '../utils/db.js';
 import { NotFoundError, ConflictError } from '../utils/errors.js';
 import { parseJsonField, stringifyJsonField } from '../utils/json.js';
@@ -197,6 +198,252 @@ export class MCPService {
     }
 
     return createdTools;
+  }
+
+  async testConnection(config: MCPServerConfig): Promise<{ success: boolean; error?: string }> {
+    if (config.transport === 'stdio' && config.command) {
+      return this.testStdioConnection(config);
+    } else if ((config.transport === 'http' || config.transport === 'sse') && config.url) {
+      return this.testHttpConnection(config);
+    }
+    return { success: false, error: 'Invalid server configuration' };
+  }
+
+  private async testStdioConnection(config: MCPServerConfig): Promise<{ success: boolean; error?: string }> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        if (proc && !proc.killed) {
+          proc.kill();
+        }
+        resolve({ success: false, error: 'Connection timeout (5s)' });
+      }, 5000);
+
+      let proc: ChildProcess | null = null;
+      try {
+        proc = spawn(config.command!, config.args, {
+          env: { ...process.env, ...config.env },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        let output = '';
+        let errorOutput = '';
+
+        proc.stdout?.on('data', (data) => {
+          output += data.toString();
+          // If we receive any valid JSON-RPC response, connection works
+          if (output.includes('"jsonrpc"') || output.includes('{"')) {
+            clearTimeout(timeout);
+            proc?.kill();
+            resolve({ success: true });
+          }
+        });
+
+        proc.stderr?.on('data', (data) => {
+          errorOutput += data.toString();
+        });
+
+        proc.on('error', (err) => {
+          clearTimeout(timeout);
+          resolve({ success: false, error: `Failed to spawn process: ${err.message}` });
+        });
+
+        proc.on('close', (code) => {
+          clearTimeout(timeout);
+          if (code === 0 || output.includes('"jsonrpc"')) {
+            resolve({ success: true });
+          } else {
+            resolve({ success: false, error: errorOutput || `Process exited with code ${code}` });
+          }
+        });
+
+        // Send initialize request
+        const initRequest = JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'agent-control-room', version: '1.0.0' }
+          }
+        }) + '\n';
+        
+        proc.stdin?.write(initRequest);
+      } catch (err) {
+        clearTimeout(timeout);
+        resolve({ success: false, error: err instanceof Error ? err.message : 'Unknown error' });
+      }
+    });
+  }
+
+  private async testHttpConnection(config: MCPServerConfig): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await fetch(config.url!, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...config.headers,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'agent-control-room', version: '1.0.0' }
+          }
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (response.ok) {
+        return { success: true };
+      }
+      return { success: false, error: `HTTP ${response.status}: ${response.statusText}` };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : 'Connection failed' };
+    }
+  }
+
+  async discoverTools(config: MCPServerConfig): Promise<{ name: string; description?: string; inputSchema?: Record<string, unknown> }[]> {
+    if (config.transport === 'stdio' && config.command) {
+      return this.discoverStdioTools(config);
+    } else if ((config.transport === 'http' || config.transport === 'sse') && config.url) {
+      return this.discoverHttpTools(config);
+    }
+    return [];
+  }
+
+  private async discoverStdioTools(config: MCPServerConfig): Promise<{ name: string; description?: string; inputSchema?: Record<string, unknown> }[]> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        if (proc && !proc.killed) {
+          proc.kill();
+        }
+        resolve([]);
+      }, 10000);
+
+      let proc: ChildProcess | null = null;
+      try {
+        proc = spawn(config.command!, config.args, {
+          env: { ...process.env, ...config.env },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        let buffer = '';
+        let messageId = 1;
+
+        proc.stdout?.on('data', (data) => {
+          buffer += data.toString();
+          
+          // Try to parse complete JSON messages
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const msg = JSON.parse(line);
+              
+              if (msg.id === 1 && msg.result) {
+                // Initialize response received, now request tools
+                messageId++;
+                const toolsRequest = JSON.stringify({
+                  jsonrpc: '2.0',
+                  id: messageId,
+                  method: 'tools/list',
+                  params: {}
+                }) + '\n';
+                proc?.stdin?.write(toolsRequest);
+              } else if (msg.id === 2 && msg.result?.tools) {
+                // Tools list received
+                clearTimeout(timeout);
+                proc?.kill();
+                resolve(msg.result.tools.map((t: { name: string; description?: string; inputSchema?: Record<string, unknown> }) => ({
+                  name: t.name,
+                  description: t.description,
+                  inputSchema: t.inputSchema,
+                })));
+              }
+            } catch {
+              // Not valid JSON, continue
+            }
+          }
+        });
+
+        proc.on('error', () => {
+          clearTimeout(timeout);
+          resolve([]);
+        });
+
+        proc.on('close', () => {
+          clearTimeout(timeout);
+          resolve([]);
+        });
+
+        // Send initialize request
+        const initRequest = JSON.stringify({
+          jsonrpc: '2.0',
+          id: messageId,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'agent-control-room', version: '1.0.0' }
+          }
+        }) + '\n';
+        
+        proc.stdin?.write(initRequest);
+      } catch {
+        clearTimeout(timeout);
+        resolve([]);
+      }
+    });
+  }
+
+  private async discoverHttpTools(config: MCPServerConfig): Promise<{ name: string; description?: string; inputSchema?: Record<string, unknown> }[]> {
+    try {
+      // First initialize
+      await fetch(config.url!, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...config.headers },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'agent-control-room', version: '1.0.0' }
+          }
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+
+      // Then list tools
+      const response = await fetch(config.url!, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...config.headers },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/list',
+          params: {}
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (response.ok) {
+        const data = await response.json() as { result?: { tools?: { name: string; description?: string; inputSchema?: Record<string, unknown> }[] } };
+        if (data.result?.tools) {
+          return data.result.tools;
+        }
+      }
+      return [];
+    } catch {
+      return [];
+    }
   }
 
   buildMcpServersConfig(

@@ -81,19 +81,21 @@ router.post('/servers/:id/test', async (req: Request, res: Response, next: NextF
     
     await mcpService.updateStatus(req.params.id, 'testing');
     
-    try {
+    // Actually test the connection using real MCP protocol
+    const result = await mcpService.testConnection(server);
+    
+    if (result.success) {
       await mcpService.updateStatus(req.params.id, 'connected');
       res.json({ 
         success: true, 
         message: `Successfully connected to ${server.name}`,
-        server 
+        server: await mcpService.getById(req.params.id)
       });
-    } catch (testError) {
-      const errorMessage = testError instanceof Error ? testError.message : 'Unknown error';
-      await mcpService.updateStatus(req.params.id, 'error', errorMessage);
+    } else {
+      await mcpService.updateStatus(req.params.id, 'error', result.error);
       res.status(500).json({ 
         success: false, 
-        error: errorMessage 
+        error: result.error || 'Connection failed'
       });
     }
   } catch (error) {
@@ -105,13 +107,17 @@ router.post('/servers/:id/discover-tools', async (req: Request, res: Response, n
   try {
     const server = await mcpService.getById(req.params.id);
     
-    const mockTools = [
-      { name: 'list_files', description: 'List files in a directory' },
-      { name: 'read_file', description: 'Read contents of a file' },
-      { name: 'write_file', description: 'Write contents to a file' },
-    ];
+    // Actually discover tools from the MCP server using real protocol
+    const discoveredTools = await mcpService.discoverTools(server);
     
-    const tools = await mcpService.syncTools(server.workspaceId, server.name, mockTools);
+    if (discoveredTools.length === 0) {
+      // If discovery failed or no tools, return empty but don't error
+      res.json([]);
+      return;
+    }
+    
+    // Sync discovered tools to database
+    const tools = await mcpService.syncTools(server.workspaceId, server.name, discoveredTools);
     res.json(tools);
   } catch (error) {
     next(error);
